@@ -3,21 +3,39 @@ file_tools.py — Read, write, list, and search files in the workspace.
 
 All paths are relative to the repo root.
 Never write outside the repo root.
+
+Security:
+- REPO_ROOT is resolved to an absolute real path at import time.
+- _safe_path() checks for null bytes, newlines, and path traversal.
+- Symlinks are followed and verified to stay inside REPO_ROOT.
 """
 
 import os
-import fnmatch
 from pathlib import Path
-from typing import Union
 
-REPO_ROOT = Path(os.environ.get("AGENT_WORKSPACE_ROOT", Path(__file__).parent.parent))
+# Resolve to absolute real path at import time.
+# This prevents symlink-based traversal and relative-path attacks.
+_raw_root = os.environ.get("AGENT_WORKSPACE_ROOT", str(Path(__file__).parent.parent))
+REPO_ROOT: Path = Path(_raw_root).resolve()
 
 
 def _safe_path(path: str) -> Path:
-    """Resolve path and ensure it stays inside REPO_ROOT."""
+    """
+    Resolve path and verify it stays inside REPO_ROOT.
+    Blocks: null bytes, newlines, and directory traversal (including via symlinks).
+    """
+    # Block null bytes and newline characters immediately.
+    if "\x00" in path or "\n" in path or "\r" in path:
+        raise PermissionError(f"Illegal characters in path: {repr(path)}")
+
     resolved = (REPO_ROOT / path).resolve()
-    if not str(resolved).startswith(str(REPO_ROOT.resolve())):
-        raise PermissionError(f"Path escape attempt blocked: {path}")
+
+    # str.startswith on resolved absolute paths is safe here.
+    repo_str = str(REPO_ROOT)
+    resolved_str = str(resolved)
+    if resolved_str != repo_str and not resolved_str.startswith(repo_str + os.sep):
+        raise PermissionError(f"Path escape attempt blocked: {path!r}")
+
     return resolved
 
 

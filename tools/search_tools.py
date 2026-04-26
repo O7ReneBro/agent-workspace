@@ -2,11 +2,23 @@
 search_tools.py — Text and symbol search across the workspace.
 
 Provides grep-style search and simple symbol (def/class) lookup.
+
+Security:
+- re.compile wrapped in try/except to surface bad regex safely.
+- Language parameter validated against explicit allowlist.
+- find_todos tag whitelist enforced.
 """
 
 import re
-from pathlib import Path
 from tools.file_tools import REPO_ROOT, _safe_path
+
+# Supported languages for find_symbol.
+_SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python", "javascript", "typescript"})
+
+# Allowed TODO-style tags (prevent arbitrary regex injection via tag list).
+_ALLOWED_TODO_TAGS: frozenset[str] = frozenset({
+    "TODO", "FIXME", "HACK", "NOTE", "XXX", "BUG", "OPTIMIZE", "REVIEW",
+})
 
 
 def grep(
@@ -19,9 +31,14 @@ def grep(
     """
     Regex grep across files.
     Returns list of {path, line_number, line} dicts.
+    Returns an error dict if the pattern is invalid regex.
     """
     flags = 0 if case_sensitive else re.IGNORECASE
-    compiled = re.compile(pattern, flags)
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as e:
+        return [{"error": f"Invalid regex pattern: {e}", "path": "", "line_number": 0, "line": ""}]
+
     base = _safe_path(directory)
     results = []
     for p in base.rglob(file_glob):
@@ -52,23 +69,43 @@ def find_symbol(
 ) -> list[dict]:
     """
     Find function or class definitions for a symbol name.
-    Supports: python, javascript/typescript.
-    Returns list of {path, line_number, line} dicts.
+    Supported languages: python, javascript, typescript.
+    Returns an error dict for unsupported languages.
     """
+    lang = language.lower()
+    if lang not in _SUPPORTED_LANGUAGES:
+        return [{
+            "error": (
+                f"Unsupported language: {language!r}. "
+                f"Supported: {sorted(_SUPPORTED_LANGUAGES)}"
+            ),
+            "path": "", "line_number": 0, "line": "",
+        }]
+
     patterns = {
         "python": rf"^\s*(def|class)\s+{re.escape(symbol)}\b",
-        "javascript": rf"(function\s+{re.escape(symbol)}|const\s+{re.escape(symbol)}\s*=|class\s+{re.escape(symbol)})",
-        "typescript": rf"(function\s+{re.escape(symbol)}|const\s+{re.escape(symbol)}\s*=|class\s+{re.escape(symbol)})",
+        "javascript": (
+            rf"(function\s+{re.escape(symbol)}"
+            rf"|const\s+{re.escape(symbol)}\s*="
+            rf"|class\s+{re.escape(symbol)})"
+        ),
+        "typescript": (
+            rf"(function\s+{re.escape(symbol)}"
+            rf"|const\s+{re.escape(symbol)}\s*="
+            rf"|class\s+{re.escape(symbol)})"
+        ),
     }
     file_globs = {
         "python": "*.py",
-        "javascript": "*.{js,jsx,mjs}",
-        "typescript": "*.{ts,tsx}",
+        "javascript": "*.js",
+        "typescript": "*.ts",
     }
-    lang = language.lower()
-    pat = patterns.get(lang, patterns["python"])
-    glob = file_globs.get(lang, "*.py")
-    return grep(pat, directory=directory, file_glob=glob, case_sensitive=True)
+    return grep(
+        patterns[lang],
+        directory=directory,
+        file_glob=file_globs[lang],
+        case_sensitive=True,
+    )
 
 
 def find_todos(
@@ -78,8 +115,17 @@ def find_todos(
 ) -> list[dict]:
     """
     Find TODO/FIXME/HACK/NOTE comments in the codebase.
+    Tags are validated against an allowlist to prevent regex injection.
     """
-    if tags is None:
-        tags = ["TODO", "FIXME", "HACK", "NOTE", "XXX"]
-    pattern = "|".join(tags)
+    requested = set(tags or _ALLOWED_TODO_TAGS)
+    safe_tags = [t for t in requested if t.upper() in _ALLOWED_TODO_TAGS]
+    if not safe_tags:
+        return [{
+            "error": (
+                f"No valid tags provided. "
+                f"Allowed: {sorted(_ALLOWED_TODO_TAGS)}"
+            ),
+            "path": "", "line_number": 0, "line": "",
+        }]
+    pattern = "|".join(re.escape(t) for t in safe_tags)
     return grep(pattern, directory=directory, case_sensitive=False, max_results=max_results)
