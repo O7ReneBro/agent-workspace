@@ -1,0 +1,26 @@
+# Agent Workspace — Global Configuration
+
+agent:
+  default: primary-assistant
+  model: claude-sonnet-4  # override per agent if needed
+
+memory:
+  notes_path: memory/notes
+  tasks_path: memory/tasks
+  context_path: memory/context
+  episodes_path: memory/episodes
+  auto_write_episodes: true
+  max_episode_entries: 1000
+
+safety:
+  require_confirmation_for:
+    - git_push
+    - open_pr
+    - delete_file
+    - run_destructive_command
+  external_apis_enabled: false
+
+logging:
+  level: info
+  log_tool_calls: true
+  log_prompts: false  # set to true only for debugging
