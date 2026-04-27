@@ -1,12 +1,14 @@
 """
 Supervisor — LangGraph-based Multi-Agent Trading Orchestrator
 Flow:
-  1. Market Scanner → signals
-  2. Ollama LLM review (optional qualitative filter)
-  3. Risk Manager → validated signals
-  4. Execution Agent → live orders
+  1. Market Scanner -> signals
+  2. Ollama LLM review (qualitative filter)
+  3. Risk Manager -> validated signals
+  4. Telegram Alert -> notify per signal
+  5. Execution Agent -> live orders
+  6. Telegram Summary -> run-end notification
 
-Requires: langgraph, ollama, ccxt, pyyaml
+Requires: langgraph, ollama, ccxt, pyyaml, requests
 """
 
 from langgraph.graph import StateGraph, END
@@ -19,6 +21,7 @@ import json
 from market_scanner import run_scanner
 from risk_manager import validate_signal, load_config
 from execution_agent import execute_signal
+from telegram_alert import send_message, format_signal_message, format_run_summary
 
 
 # ─── State Schema ────────────────────────────────────────────────────────────
@@ -33,21 +36,19 @@ class TradingState(TypedDict):
     execution_results: Annotated[list, operator.add]
 
 
-# ─── Node: Market Scanner ─────────────────────────────────────────────────────
+# ─── Node: Market Scanner ────────────────────────────────────────────────────
 
 def node_scanner(state: TradingState) -> dict:
     print("\n[Supervisor] >>> Running Market Scanner...")
     signals = run_scanner(state["config"])
-    # Filter to actionable only
     actionable = [s for s in signals if s["direction"] != "NO_TRADE"]
     print(f"[Supervisor] {len(actionable)}/{len(signals)} pairs have signals")
     return {"raw_signals": signals, "llm_filtered_signals": actionable}
 
 
-# ─── Node: Ollama LLM Filter ──────────────────────────────────────────────────
+# ─── Node: Ollama LLM Filter ─────────────────────────────────────────────────
 
 def query_ollama(prompt: str, model: str = "llama3", host: str = "http://localhost:11434") -> str:
-    """Send prompt to local Ollama instance, return response text."""
     response = requests.post(
         f"{host}/api/generate",
         json={"model": model, "prompt": prompt, "stream": False},
@@ -86,7 +87,6 @@ Respond ONLY with JSON."""
 
         try:
             raw = query_ollama(prompt, model=model, host=host)
-            # Extract JSON from response
             start = raw.find("{")
             end = raw.rfind("}") + 1
             result = json.loads(raw[start:end])
@@ -97,7 +97,7 @@ Respond ONLY with JSON."""
                 print(f"[LLM] REJECT {signal['symbol']}: {result.get('reason')}")
         except Exception as e:
             print(f"[LLM] Error filtering {signal['symbol']}: {e} — passing through")
-            passed.append(signal)  # fail-open: don't block on LLM error
+            passed.append(signal)
 
     return {"llm_filtered_signals": passed}
 
@@ -122,6 +122,16 @@ def node_risk_manager(state: TradingState) -> dict:
     return {"validated_signals": validated}
 
 
+# ─── Node: Telegram Alerts ────────────────────────────────────────────────────
+
+def node_telegram_alerts(state: TradingState) -> dict:
+    print("\n[Supervisor] >>> Sending Telegram alerts...")
+    for signal in state["validated_signals"]:
+        msg = format_signal_message(signal)
+        send_message(msg)
+    return {}
+
+
 # ─── Node: Execution ──────────────────────────────────────────────────────────
 
 def node_execution(state: TradingState) -> dict:
@@ -137,6 +147,15 @@ def node_execution(state: TradingState) -> dict:
     return {"execution_results": results}
 
 
+# ─── Node: Telegram Summary ───────────────────────────────────────────────────
+
+def node_telegram_summary(state: TradingState) -> dict:
+    print("\n[Supervisor] >>> Sending run summary to Telegram...")
+    msg = format_run_summary(state["execution_results"])
+    send_message(msg)
+    return {}
+
+
 # ─── Build LangGraph ──────────────────────────────────────────────────────────
 
 def build_graph() -> StateGraph:
@@ -144,13 +163,17 @@ def build_graph() -> StateGraph:
     g.add_node("scanner", node_scanner)
     g.add_node("llm_filter", node_llm_filter)
     g.add_node("risk_manager", node_risk_manager)
+    g.add_node("telegram_alerts", node_telegram_alerts)
     g.add_node("execution", node_execution)
+    g.add_node("telegram_summary", node_telegram_summary)
 
     g.set_entry_point("scanner")
     g.add_edge("scanner", "llm_filter")
     g.add_edge("llm_filter", "risk_manager")
-    g.add_edge("risk_manager", "execution")
-    g.add_edge("execution", END)
+    g.add_edge("risk_manager", "telegram_alerts")
+    g.add_edge("telegram_alerts", "execution")
+    g.add_edge("execution", "telegram_summary")
+    g.add_edge("telegram_summary", END)
 
     return g.compile()
 
@@ -158,9 +181,10 @@ def build_graph() -> StateGraph:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    config = load_config()
-    # Fetch live account balance from Kraken
     import ccxt
+    from env_loader import load_config_with_env
+
+    config = load_config_with_env()
     exchange = ccxt.kraken({
         "apiKey": config["kraken"]["api_key"],
         "secret": config["kraken"]["api_secret"],
