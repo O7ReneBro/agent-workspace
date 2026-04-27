@@ -1,0 +1,40 @@
+# Multi-Agent Trading System Configuration
+# Copy this file and fill in your real API keys.
+# Never commit real API keys to Git — use .env or secrets manager.
+
+kraken:
+  api_key: "YOUR_KRAKEN_API_KEY"       # Replace with real key
+  api_secret: "YOUR_KRAKEN_API_SECRET" # Replace with real secret
+
+ollama:
+  host: "http://localhost:11434"
+  model: "llama3"   # or mistral, qwen2.5, etc.
+
+trading:
+  pairs:
+    - "BTC/USD"
+    - "ETH/USD"
+    - "SOL/USD"
+    - "XRP/USD"
+    - "ADA/USD"
+  # Add or remove pairs as needed
+
+risk:
+  risk_per_trade: 0.01         # 1% of account per trade
+  min_rr: 2.0                  # Minimum reward-to-risk ratio
+  max_open_positions: 3        # Max simultaneous trades
+  atr_sl_multiplier: 1.5       # SL = entry ± ATR * this
+  min_order_size: 0.0001       # Minimum order size (base currency)
+  max_daily_drawdown: 0.05     # 5% daily drawdown limit (manual check)
+
+scanner:
+  htf_timeframe: "4h"
+  trigger_timeframe: "1h"
+  entry_timeframe: "15m"
+  rsi_period: 14
+  atr_period: 14
+  candle_limit: 100
+
+logging:
+  trade_log_path: "logs/trade_log.jsonl"
+  level: "INFO"
